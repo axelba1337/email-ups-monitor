@@ -2,6 +2,7 @@ require('dotenv').config();
 const Imap = require('imap');
 const { simpleParser } = require('mailparser');
 const axios = require('axios');
+const crypto = require('crypto');
 
 // Environment variables
 const IMAP_SERVER = process.env.IMAP_SERVER;
@@ -40,19 +41,50 @@ function extractLocation(emailText) {
 
 function sendEmailToApi(messageBody) {
   const message = `📢 *Notifikasi UPS*\n\n${messageBody}`;
+  const secretKey = process.env.API_KEY;
+  
+  // Proteksi jika API_KEY lupa dimasukkan di .env
+  if (!secretKey) {
+    console.error('❌ API_KEY tidak ditemukan di .env!');
+    return;
+  }
+
+  // 1. Buat Waktu Sesi
+  const timestamp = Date.now().toString();
+
+  // 2. Buat Signature (Enkripsi HMAC)
+  const payload = RECIPIENT_ID + message + timestamp;
+  const signature = crypto.createHmac('sha256', secretKey).update(payload).digest('hex');
+
+  // 3. Kirim via Axios ke Gateway
   axios.post(API_URL, {
-    message,
-    id: RECIPIENT_ID
-  }, {
-    headers: {
-      'x-api-key': process.env.API_KEY
-    }
+    id: RECIPIENT_ID,
+    message: message,
+    timestamp: timestamp,
+    signature: signature
   }).then(() => {
-    console.log('✅ Message sent to API');
+    console.log('✅ Message sent to API securely');
   }).catch(err => {
-    console.error('❌ Error sending to API:', err.message);
+    // Tangkap error spesifik dari Gateway
+    console.error('❌ Error sending to API:', err.response ? err.response.data : err.message);
   });
 }
+
+// function sendEmailToApi(messageBody) {
+//   const message = `📢 *Notifikasi UPS*\n\n${messageBody}`;
+//   axios.post(API_URL, {
+//     message,
+//     id: RECIPIENT_ID
+//   }, {
+//     headers: {
+//       'x-api-key': process.env.API_KEY
+//     }
+//   }).then(() => {
+//     console.log('✅ Message sent to API');
+//   }).catch(err => {
+//     console.error('❌ Error sending to API:', err.message);
+//   });
+// }
 
 function processNewEmail(stream, seqno) {
   simpleParser(stream)
