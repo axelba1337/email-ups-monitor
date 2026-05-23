@@ -12,6 +12,18 @@ const IMAP_PASSWORD = process.env.IMAP_PASSWORD;
 const API_URL = process.env.API_URL;
 const RECIPIENT_ID = process.env.RECIPIENT_ID;
 
+// const imap = new Imap({
+//   user: IMAP_USER,
+//   password: IMAP_PASSWORD,
+//   host: IMAP_SERVER,
+//   port: IMAP_PORT,
+//   tls: true, // WAJIB TRUE untuk port 993
+//   tlsOptions: { 
+//     rejectUnauthorized: false // Abaikan jika server kantor menggunakan sertifikat self-signed
+//   },
+//   autotls: 'always'
+// });
+
 const imap = new Imap({
   user: IMAP_USER,
   password: IMAP_PASSWORD,
@@ -94,6 +106,7 @@ function processNewEmail(stream, seqno) {
       const eventTime = extractTimeFromBody(emailText);
       const location = extractLocation(emailText);
 
+      // Tandai email sudah dibaca
       imap.addFlags(seqno, '\\Seen', () => {});
 
       if (!locationStatus[location]) {
@@ -105,27 +118,27 @@ function processNewEmail(stream, seqno) {
       }
 
       const status = locationStatus[location];
-      const currentStatus = { ...status };
-
-      const powerProblemTime = status.powerProblemTime;
-      const timeDiff = powerProblemTime ? ((eventTime - powerProblemTime) / 1000).toFixed(2) : '-';
-
-      console.log(`\n📧 New Email Received`);
-      console.log(`Subject      : ${emailSubject}`);
-      console.log(`Location     : ${location}`);
-      console.log(`Event Time   : ${eventTime.toLocaleString()}`);
-      console.log(`Prev Problem : ${powerProblemTime ? powerProblemTime.toLocaleString() : 'None'}`);
-      console.log(`Time Diff    : ${timeDiff} seconds`);
-      console.log(`Status       : isPowerProblem=${currentStatus.isPowerProblem}, wasOnGenerator=${currentStatus.wasOnGenerator}`);
-
       const subjectLower = emailSubject.toLowerCase();
+      const bodyLower = emailText.toLowerCase();
 
-      if (subjectLower.includes('ups:')) {
-        if (subjectLower.includes('on battery power') && !status.isPowerProblem) {
+      console.log(`\n📧 Email Baru Masuk!`);
+      console.log(`Subjek : ${emailSubject}`);
+
+      // Cek apakah ini event listrik dengan membaca Subjek ATAU Isi Body email
+      const isPowerOff = subjectLower.includes('on battery power') || bodyLower.includes('on battery power');
+      const isPowerOn = subjectLower.includes('no longer on battery power') || bodyLower.includes('no longer on battery power');
+
+      if (isPowerOff && !isPowerOn) {
+        // --- 1. EVENT LISTRIK MATI ---
+        if (!status.isPowerProblem) {
           status.powerProblemTime = eventTime;
           status.isPowerProblem = true;
-          console.log(`⚠️ Power problem started at ${location}`);
-        } else if (subjectLower.includes('no longer on battery power') && status.isPowerProblem) {
+          console.log(`⚠️ Menahan email... Menunggu apakah ini trip atau pemadaman di ${location}`);
+        }
+
+      } else if (isPowerOn) {
+        // --- 2. EVENT LISTRIK NYALA ---
+        if (status.isPowerProblem) {
           const diff = (eventTime - status.powerProblemTime) / 1000;
           let message;
 
@@ -133,10 +146,7 @@ function processNewEmail(stream, seqno) {
             if (diff <= 5) {
               message = `✅ *Listrik PLN* di lokasi *${location}* sudah kembali *normal*.`;
               status.wasOnGenerator = false;
-              console.log(`📩 Sending: ${message}`);
               sendEmailToApi(message);
-            } else {
-              console.log(`ℹ️ Diabaikan (wasOnGenerator=true & selisih ${diff.toFixed(2)}s > 5s)`);
             }
           } else {
             if (diff > 5) {
@@ -145,25 +155,108 @@ function processNewEmail(stream, seqno) {
             } else {
               message = `⚡ *Terjadi trip listrik* di lokasi *${location}*.`;
             }
-
-            if (message) {
-              console.log(`📩 Sending: ${message}`);
-              sendEmailToApi(message);
-            }
+            if (message) sendEmailToApi(message);
           }
 
           status.isPowerProblem = false;
           status.powerProblemTime = null;
+        } else {
+          // Jika mendapat notif nyala tapi tidak ada rekor padam sebelumnya
+          sendEmailToApi(emailText || emailSubject);
         }
-      } else if (!status.isPowerProblem) {
-        console.log(`📩 Sending full email as-is (not a UPS alert)`);
-        sendEmailToApi(emailText);
+
+      } else {
+        // --- 3. SEMUA EVENT LAINNYA ---
+        // (Login web, baterai bocor, suhu panas, tes koneksi, dll)
+        console.log(`📩 Meneruskan notifikasi sistem/login langsung ke WA...`);
+        // Kirim isi email. Jika isi kosong, kirim subjeknya
+        const contentToSend = emailText.trim() ? emailText : emailSubject;
+        sendEmailToApi(contentToSend);
       }
     })
     .catch(err => {
       console.error('❌ Email parse error:', err);
     });
 }
+
+// function processNewEmail(stream, seqno) {
+//   simpleParser(stream)
+//     .then(parsed => {
+//       const emailSubject = parsed.subject || '';
+//       const emailText = parsed.text || '';
+//       const eventTime = extractTimeFromBody(emailText);
+//       const location = extractLocation(emailText);
+
+//       imap.addFlags(seqno, '\\Seen', () => {});
+
+//       if (!locationStatus[location]) {
+//         locationStatus[location] = {
+//           isPowerProblem: false,
+//           powerProblemTime: null,
+//           wasOnGenerator: false
+//         };
+//       }
+
+//       const status = locationStatus[location];
+//       const currentStatus = { ...status };
+
+//       const powerProblemTime = status.powerProblemTime;
+//       const timeDiff = powerProblemTime ? ((eventTime - powerProblemTime) / 1000).toFixed(2) : '-';
+
+//       console.log(`\n📧 New Email Received`);
+//       console.log(`Subject      : ${emailSubject}`);
+//       console.log(`Location     : ${location}`);
+//       console.log(`Event Time   : ${eventTime.toLocaleString()}`);
+//       console.log(`Prev Problem : ${powerProblemTime ? powerProblemTime.toLocaleString() : 'None'}`);
+//       console.log(`Time Diff    : ${timeDiff} seconds`);
+//       console.log(`Status       : isPowerProblem=${currentStatus.isPowerProblem}, wasOnGenerator=${currentStatus.wasOnGenerator}`);
+
+//       const subjectLower = emailSubject.toLowerCase();
+
+//       if (subjectLower.includes('ups:')) {
+//         if (subjectLower.includes('on battery power') && !status.isPowerProblem) {
+//           status.powerProblemTime = eventTime;
+//           status.isPowerProblem = true;
+//           console.log(`⚠️ Power problem started at ${location}`);
+//         } else if (subjectLower.includes('no longer on battery power') && status.isPowerProblem) {
+//           const diff = (eventTime - status.powerProblemTime) / 1000;
+//           let message;
+
+//           if (status.wasOnGenerator) {
+//             if (diff <= 5) {
+//               message = `✅ *Listrik PLN* di lokasi *${location}* sudah kembali *normal*.`;
+//               status.wasOnGenerator = false;
+//               console.log(`📩 Sending: ${message}`);
+//               sendEmailToApi(message);
+//             } else {
+//               console.log(`ℹ️ Diabaikan (wasOnGenerator=true & selisih ${diff.toFixed(2)}s > 5s)`);
+//             }
+//           } else {
+//             if (diff > 5) {
+//               message = `⚠️ *Listrik PLN* di lokasi *${location}* sedang *padam!*\n🔌 *Genset aktif* sebagai sumber daya sementara.`;
+//               status.wasOnGenerator = true;
+//             } else {
+//               message = `⚡ *Terjadi trip listrik* di lokasi *${location}*.`;
+//             }
+
+//             if (message) {
+//               console.log(`📩 Sending: ${message}`);
+//               sendEmailToApi(message);
+//             }
+//           }
+
+//           status.isPowerProblem = false;
+//           status.powerProblemTime = null;
+//         }
+//       } else if (!status.isPowerProblem) {
+//         console.log(`📩 Sending full email as-is (not a UPS alert)`);
+//         sendEmailToApi(emailText);
+//       }
+//     })
+//     .catch(err => {
+//       console.error('❌ Email parse error:', err);
+//     });
+// }
 
 function startImapListener() {
   imap.once('ready', () => {
