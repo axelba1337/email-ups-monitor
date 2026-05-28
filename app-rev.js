@@ -12,6 +12,9 @@ const IMAP_PASSWORD = process.env.IMAP_PASSWORD;
 const API_URL = process.env.API_URL;
 const RECIPIENT_ID = process.env.RECIPIENT_ID;
 
+// Menambahkan Array untuk menampung banyak nomor dari .env
+const RECIPIENT_IDS = RECIPIENT_ID ? RECIPIENT_ID.split(',').map(id => id.trim()) : [];
+
 // const imap = new Imap({
 //   user: IMAP_USER,
 //   password: IMAP_PASSWORD,
@@ -64,21 +67,26 @@ function sendEmailToApi(messageBody) {
   // 1. Buat Waktu Sesi
   const timestamp = Date.now().toString();
 
-  // 2. Buat Signature (Enkripsi HMAC)
-  const payload = RECIPIENT_ID + message + timestamp;
-  const signature = crypto.createHmac('sha256', secretKey).update(payload).digest('hex');
+  // LOOPING: Kirim via Axios ke Gateway untuk setiap nomor di .env
+  RECIPIENT_IDS.forEach(recipientId => {
+    if (!recipientId) return;
 
-  // 3. Kirim via Axios ke Gateway
-  axios.post(API_URL, {
-    id: RECIPIENT_ID,
-    message: message,
-    timestamp: timestamp,
-    signature: signature
-  }).then(() => {
-    console.log('✅ Message sent to API securely');
-  }).catch(err => {
-    // Tangkap error spesifik dari Gateway
-    console.error('❌ Error sending to API:', err.response ? err.response.data : err.message);
+    // 2. Buat Signature unik (Enkripsi HMAC) untuk setiap ID
+    const payload = recipientId + message + timestamp;
+    const signature = crypto.createHmac('sha256', secretKey).update(payload).digest('hex');
+
+    // 3. Kirim via Axios ke Gateway
+    axios.post(API_URL, {
+      id: recipientId,
+      message: message,
+      timestamp: timestamp,
+      signature: signature
+    }).then(() => {
+      console.log(`✅ Message sent to API securely for ${recipientId}`);
+    }).catch(err => {
+      // Tangkap error spesifik dari Gateway
+      console.error(`❌ Error sending to API for ${recipientId}:`, err.response ? err.response.data : err.message);
+    });
   });
 }
 
@@ -124,7 +132,7 @@ function processNewEmail(stream, seqno) {
       console.log(`\n📧 Email Baru Masuk!`);
       console.log(`Subjek : ${emailSubject}`);
 
-      // Cek apakah ini event listrik dengan membaca Subjek ATAU Isi Body email
+      // Cek apakah ini event listrik dengan membaca Subjek ATAU Isi Body email 
       const isPowerOff = subjectLower.includes('on battery power') || bodyLower.includes('on battery power');
       const isPowerOn = subjectLower.includes('no longer on battery power') || bodyLower.includes('no longer on battery power');
 
@@ -162,16 +170,13 @@ function processNewEmail(stream, seqno) {
           status.powerProblemTime = null;
         } else {
           // Jika mendapat notif nyala tapi tidak ada rekor padam sebelumnya
-          sendEmailToApi(emailText || emailSubject);
+          sendEmailToApi(`✅ *Listrik PLN* di lokasi *${location}* terpantau *normal*.`);
         }
 
       } else {
         // --- 3. SEMUA EVENT LAINNYA ---
         // (Login web, baterai bocor, suhu panas, tes koneksi, dll)
-        console.log(`📩 Meneruskan notifikasi sistem/login langsung ke WA...`);
-        // Kirim isi email. Jika isi kosong, kirim subjeknya
-        const contentToSend = emailText.trim() ? emailText : emailSubject;
-        sendEmailToApi(contentToSend);
+        console.log(`ℹ️ Email diabaikan (Bukan notifikasi On/Off baterai UPS).`);
       }
     })
     .catch(err => {
